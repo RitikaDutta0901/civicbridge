@@ -15,6 +15,8 @@ const demoUsers = new Map();
 const demoSolutions = [];
 const demoComments = [];
 const demoCollaborations = new Set();
+const demoProgress = new Map();
+const demoNotifications = new Map();
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
 app.use(express.json({ limit: '1mb' }));
 
@@ -35,10 +37,38 @@ function auth(req, res, next) {
 }
 function adminOnly(req, res, next) { return req.user.role === 'ADMINISTRATOR' ? next() : res.status(403).json({ error: 'Administrator access required.' }); }
 function validateText(value, max = 5000) { return typeof value === 'string' && value.trim().length > 0 && value.length <= max; }
+const categoryRules = [
+  ['Healthcare', /\b(health|clinic|hospital|mental|doctor|care)\b/i],
+  ['Education', /\b(school|student|teacher|library|learn|education)\b/i],
+  ['Environment', /\b(tree|park|green|climate|water|recycl|pollution)\b/i],
+  ["Women's Safety", /\b(safety|safe|harass|violence|lighting|crossing)\b/i],
+  ['Employment', /\b(job|work|worker|employment|bus|transport)\b/i],
+  ['Accessibility', /\b(access|wheelchair|disab|inclusive|ramp)\b/i],
+  ['Public Infrastructure', /\b(road|bridge|street|sidewalk|infrastructure|traffic)\b/i]
+];
+function suggestCategory(text = '') {
+  const found = categoryRules.find(([, rule]) => rule.test(text));
+  return { category: found?.[0] || 'Other', explanation: found ? `Matched community keywords related to ${found[0].toLowerCase()}.` : 'No specific category keywords matched; choose the category that best fits.', confidence: found ? 0.82 : 0.25 };
+}
+function tokens(text = '') { return new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(word => word.length > 3)); }
+function similarity(left, right) { const a = tokens(left); const b = tokens(right); if (!a.size || !b.size) return 0; const intersection = [...a].filter(word => b.has(word)).length; return intersection / new Set([...a, ...b]).size; }
+async function addNotification(recipientId, type, message, challengeId) {
+  if (!recipientId) return;
+  if (databaseAvailable) {
+    try { await prisma.notification.create({ data: { recipientId, type, message, challengeId } }); return; } catch { databaseAvailable = false; }
+  }
+  const list = demoNotifications.get(recipientId) || [];
+  list.unshift({ id: `demo-notification-${Date.now()}-${list.length}`, recipientId, type, message, challengeId, createdAt: new Date().toISOString(), readAt: null });
+  demoNotifications.set(recipientId, list);
+}
+function paginate(items, page = 1, limit = 12) {
+  const safePage = Math.max(1, Number(page) || 1); const safeLimit = Math.min(50, Math.max(1, Number(limit) || 12));
+  return { data: items.slice((safePage - 1) * safeLimit, safePage * safeLimit), pagination: { page: safePage, limit: safeLimit, total: items.length, pages: Math.ceil(items.length / safeLimit) } };
+}
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, database: databaseAvailable ? 'connected' : 'demo-fallback' }));
 app.get('/api/challenges', async (req, res) => {
-  const { search = '', category, status, location, sort = 'recent' } = req.query;
+  const { search = '', category, status, location, sort = 'recent', page = 1, limit = 12 } = req.query;
   const validStatuses = ['All', 'open', 'in-progress', 'resolved'];
   if (status && !validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid challenge status.' });
   const dbStatus = status === 'in-progress' ? 'in_progress' : status;
@@ -46,19 +76,59 @@ app.get('/api/challenges', async (req, res) => {
     () => prisma.challenge.findMany({ where: { ...(category && category !== 'All' ? { category } : {}), ...(dbStatus && dbStatus !== 'All' ? { status: dbStatus } : {}), ...(location ? { location: { contains: location, mode: 'insensitive' } } : {}), ...(search ? { OR: [{ title: { contains: search, mode: 'insensitive' } }, { description: { contains: search, mode: 'insensitive' } }, { location: { contains: search, mode: 'insensitive' } }] } : {}) }, orderBy: sort === 'popular' ? { votes: 'desc' } : { createdAt: 'desc' } }),
     () => demoChallenges.filter((c) => (!category || category === 'All' || c.category === category) && (!status || status === 'All' || c.status === status) && (!location || c.location.toLowerCase().includes(location.toLowerCase())) && (!search || `${c.title} ${c.description} ${c.location}`.toLowerCase().includes(search.toLowerCase()))).sort((a, b) => sort === 'popular' ? b.votes - a.votes : new Date(b.createdAt) - new Date(a.createdAt))
   );
-  res.json({ data: result.map(serialize), demo: !databaseAvailable });
+  let items = result.map(serialize);
+  if (sort === 'oldest') items.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  if (sort === 'relevant' && search) items.sort((a, b) => `${b.title} ${b.description}`.toLowerCase().split(search.toLowerCase()).length - `${a.title} ${a.description}`.toLowerCase().split(search.toLowerCase()).length);
+  res.json({ ...paginate(items, page, limit), demo: !databaseAvailable });
+});
+app.get('/api/challenges/suggest-category', (req, res) => res.json({ data: suggestCategory(`${req.query.title || ''} ${req.query.description || ''}`) }));
+app.get('/api/challenges/duplicates', async (req, res) => {
+  const text = `${req.query.title || ''} ${req.query.description || ''}`.toLowerCase();
+  const matches = await withDatabase(() => prisma.challenge.findMany({ take: 10, orderBy: { createdAt: 'desc' } }), () => demoChallenges);
+  const scored = matches.map(c => ({ ...serialize(c), similarity: similarity(text, `${c.title} ${c.description}`) })).filter(c => c.similarity >= 0.2).sort((a, b) => b.similarity - a.similarity);
+  res.json({ data: scored.slice(0, 5), demo: !databaseAvailable });
 });
 app.get('/api/challenges/:id', async (req, res) => {
-  const result = await withDatabase(() => prisma.challenge.findUnique({ where: { id: req.params.id }, include: { solutions: { include: { author: { select: { name: true, role: true } } } }, comments: { include: { user: { select: { name: true, role: true } } } }, collaborations: { include: { user: { select: { name: true, role: true } } } } } }), () => demoChallenges.find((c) => c.id === req.params.id));
+  const result = await withDatabase(() => prisma.challenge.findUnique({ where: { id: req.params.id }, include: { solutions: { include: { author: { select: { name: true, role: true } } } }, comments: { include: { user: { select: { name: true, role: true } } } }, collaborations: { include: { user: { select: { name: true, role: true } } } }, timeline: { include: { author: { select: { name: true, role: true } } }, orderBy: { createdAt: 'asc' } } } }), () => ({ ...demoChallenges.find((c) => c.id === req.params.id), timeline: demoProgress.get(req.params.id) || [] }));
   if (!result) return res.status(404).json({ error: 'Challenge not found' });
   res.json({ data: serialize(result), demo: !databaseAvailable });
+});
+app.post('/api/challenges/preview', auth, async (req, res) => {
+  const suggestion = suggestCategory(`${req.body.title || ''} ${req.body.description || ''}`);
+  const text = `${req.body.title || ''} ${req.body.description || ''}`.toLowerCase();
+  const all = await withDatabase(() => prisma.challenge.findMany({ take: 100, orderBy: { createdAt: 'desc' } }), () => demoChallenges);
+  const similar = all.map(c => ({ ...serialize(c), similarity: similarity(text, `${c.title} ${c.description}`) })).filter(c => c.similarity >= 0.2).sort((a, b) => b.similarity - a.similarity).slice(0, 5);
+  res.json({ data: { suggestion, similar }, demo: !databaseAvailable });
 });
 app.post('/api/challenges', auth, async (req, res) => {
   const { title, description, category, location, expectedImpact, supportingInformation, proposedSolutions } = req.body;
   const validCategories = ['Education', 'Healthcare', 'Environment', 'Public Infrastructure', "Women's Safety", 'Employment', 'Accessibility', 'Other'];
   if (![title, description, category, location, expectedImpact].every(validateText) || !validCategories.includes(category)) return res.status(400).json({ error: 'Valid title, description, category, location, and expected impact are required.' });
   const challenge = await withDatabase(() => prisma.challenge.create({ data: { title, description, category, location, expectedImpact, supportingInformation, proposedSolutions, authorId: req.user.sub } }), () => ({ id: `demo-${Date.now()}`, title, description, category, location, expectedImpact, supportingInformation, proposedSolutions, status: 'open', votes: 0, authorId: req.user.sub, createdAt: new Date().toISOString() }));
-  res.status(201).json({ data: serialize(challenge), demo: !databaseAvailable });
+  res.status(201).json({ data: { ...serialize(challenge), suggestion: suggestCategory(`${title} ${description}`) }, demo: !databaseAvailable });
+});
+app.patch('/api/challenges/:id/status', auth, async (req, res) => {
+  const status = req.body.status === 'in-progress' ? 'in_progress' : req.body.status;
+  if (!['open', 'in_progress', 'resolved'].includes(status)) return res.status(400).json({ error: 'Invalid status.' });
+  const current = await withDatabase(() => prisma.challenge.findUnique({ where: { id: req.params.id }, select: { authorId: true } }), () => demoChallenges.find(c => c.id === req.params.id));
+  if (current && current.authorId && current.authorId !== req.user.sub && req.user.role !== 'ADMINISTRATOR') return res.status(403).json({ error: 'Only the challenge author or an administrator can update status.' });
+  const updated = await withDatabase(() => prisma.challenge.update({ where: { id: req.params.id }, data: { status }, }), () => ({ ...(demoChallenges.find(c => c.id === req.params.id) || {}), id: req.params.id, status }));
+  res.json({ data: serialize(updated), demo: !databaseAvailable });
+});
+app.post('/api/challenges/:id/progress', auth, async (req, res) => {
+  if (!validateText(req.body.body, 3000)) return res.status(400).json({ error: 'Progress update text is required.' });
+  const status = req.body.status ? (req.body.status === 'in-progress' ? 'in_progress' : req.body.status) : undefined;
+  const owner = await withDatabase(() => prisma.challenge.findUnique({ where: { id: req.params.id }, select: { authorId: true, title: true } }), () => demoChallenges.find(c => c.id === req.params.id));
+  if (!owner) return res.status(404).json({ error: 'Challenge not found.' });
+  if (owner.authorId && owner.authorId !== req.user.sub && req.user.role !== 'ADMINISTRATOR') return res.status(403).json({ error: 'Only the challenge author or an administrator can post progress updates.' });
+  const update = await withDatabase(() => prisma.progressUpdate.create({ data: { challengeId: req.params.id, authorId: req.user.sub, body: req.body.body, status, type: status ? 'STATUS' : 'UPDATE' }, include: { author: { select: { name: true, role: true } } } }), () => ({ id: `demo-progress-${Date.now()}`, challengeId: req.params.id, authorId: req.user.sub, body: req.body.body, status, createdAt: new Date().toISOString(), author: { name: req.user.name, role: req.user.role } }));
+  if (!demoProgress.has(req.params.id)) demoProgress.set(req.params.id, []); demoProgress.get(req.params.id).push(update);
+  if (owner.authorId && owner.authorId !== req.user.sub) await addNotification(owner.authorId, 'PROGRESS_UPDATE', `A progress update was posted on "${owner.title}".`, req.params.id);
+  res.status(201).json({ data: serialize(update), demo: !databaseAvailable });
+});
+app.get('/api/challenges/:id/timeline', async (req, res) => {
+  const timeline = await withDatabase(() => prisma.progressUpdate.findMany({ where: { challengeId: req.params.id }, include: { author: { select: { name: true, role: true } } }, orderBy: { createdAt: 'asc' } }), () => demoProgress.get(req.params.id) || []);
+  res.json({ data: timeline.map(serialize), demo: !databaseAvailable });
 });
 app.post('/api/auth/register', async (req, res) => {
   const { name, email, password, confirmPassword, role = 'CITIZEN' } = req.body;
@@ -105,10 +175,40 @@ app.get('/api/dashboard/stats', async (_req, res) => {
   const stats = await withDatabase(async () => ({ challenges: await prisma.challenge.count(), open: await prisma.challenge.count({ where: { status: 'open' } }), inProgress: await prisma.challenge.count({ where: { status: 'in_progress' } }), resolved: await prisma.challenge.count({ where: { status: 'resolved' } }), participatingOrganizations: await prisma.organization.count(), votes: (await prisma.challenge.aggregate({ _sum: { votes: true } }))._sum.votes || 0 }), () => ({ challenges: demoChallenges.length, open: demoChallenges.filter((c) => c.status === 'open').length, inProgress: demoChallenges.filter((c) => c.status === 'in-progress').length, resolved: demoChallenges.filter((c) => c.status === 'resolved').length, participatingOrganizations: 0, votes: demoChallenges.reduce((sum, c) => sum + c.votes, 0) }));
   res.json({ data: stats, demo: !databaseAvailable });
 });
+app.get('/api/recommendations', auth, async (req, res) => {
+  const activity = await withDatabase(async () => { const [submitted, solutions, collaborations] = await Promise.all([prisma.challenge.findMany({ where: { authorId: req.user.sub }, select: { category: true, location: true } }), prisma.solution.findMany({ where: { authorId: req.user.sub }, include: { challenge: { select: { category: true, location: true } } } }), prisma.collaboration.findMany({ where: { userId: req.user.sub }, include: { challenge: { select: { category: true, location: true } } } })]); return { submitted, solutions, collaborations }; }, () => ({ submitted: [], solutions: [], collaborations: [] }));
+  const interests = [...activity.submitted, ...activity.solutions.map(item => item.challenge), ...activity.collaborations.map(item => item.challenge)].filter(Boolean);
+  const categoriesOfInterest = new Set(interests.map(item => item.category));
+  const locationsOfInterest = new Set(interests.map(item => item.location));
+  const challenges = await withDatabase(() => prisma.challenge.findMany({ where: { authorId: { not: req.user.sub }, status: { not: 'resolved' } }, orderBy: { createdAt: 'desc' }, take: 100 }), () => demoChallenges.filter(c => c.status !== 'resolved'));
+  const ranked = challenges.map(c => { const categoryMatch = categoriesOfInterest.has(c.category); const locationMatch = locationsOfInterest.has(c.location); return { ...serialize(c), score: (categoryMatch ? 3 : 0) + (locationMatch ? 2 : 0) + c.votes / 1000, reason: categoryMatch ? `Matches your activity in ${c.category}.` : locationMatch ? `Located near ${c.location}, where you have participated.` : 'Recently submitted and open for community support.' }; }).sort((a, b) => b.score - a.score || new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 10);
+  res.json({ data: ranked, demo: !databaseAvailable });
+});
+app.get('/api/admin/analytics', auth, adminOnly, async (_req, res) => {
+  const data = await withDatabase(async () => {
+    const [total, byStatus, byCategory, recent, solutions, collaborations] = await Promise.all([prisma.challenge.count(), prisma.challenge.groupBy({ by: ['status'], _count: true }), prisma.challenge.groupBy({ by: ['category'], _count: true }), prisma.challenge.count({ where: { createdAt: { gte: new Date(Date.now() - 30 * 86400000) } } }), prisma.solution.count(), prisma.collaboration.count()]);
+    return { total, byStatus, byCategory, recent, solutions, collaborations };
+  }, () => ({ total: demoChallenges.length, byStatus: ['open', 'in-progress', 'resolved'].map(status => ({ status, _count: demoChallenges.filter(c => c.status === status).length })), byCategory: [...new Set(demoChallenges.map(c => c.category))].map(category => ({ category, _count: demoChallenges.filter(c => c.category === category).length })), recent: demoChallenges.length }));
+  res.json({ data, demo: !databaseAvailable });
+});
+app.get('/api/notifications', auth, async (req, res) => {
+  const unreadOnly = req.query.unread === 'true';
+  const list = await withDatabase(() => prisma.notification.findMany({ where: { recipientId: req.user.sub, ...(unreadOnly ? { readAt: null } : {}) }, orderBy: { createdAt: 'desc' }, take: 50 }), () => (demoNotifications.get(req.user.sub) || []).filter(n => !unreadOnly || !n.readAt));
+  res.json({ data: list, unread: list.filter(n => !n.readAt).length, demo: !databaseAvailable });
+});
+app.patch('/api/notifications/:id/read', auth, async (req, res) => {
+  const result = await withDatabase(() => prisma.notification.updateMany({ where: { id: req.params.id, recipientId: req.user.sub }, data: { readAt: new Date() } }), () => {
+    const list = demoNotifications.get(req.user.sub) || []; const item = list.find(n => n.id === req.params.id); if (item) item.readAt = new Date().toISOString(); return item;
+  });
+  if (!result || (result.count !== undefined && result.count === 0)) return res.status(404).json({ error: 'Notification not found.' });
+  res.json({ data: { read: true }, demo: !databaseAvailable });
+});
 app.post('/api/solutions', auth, async (req, res) => {
   const { challengeId, title, description, proposedApproach, expectedImpact, requiredResources } = req.body;
   if (!challengeId || !validateText(title, 200) || !validateText(description) || !validateText(proposedApproach)) return res.status(400).json({ error: 'Challenge, title, description, and proposed approach are required.' });
   const solution = await withDatabase(() => prisma.solution.create({ data: { challengeId, title, description, proposedApproach, expectedImpact, requiredResources, authorId: req.user.sub } }), () => { const s = { id: `demo-solution-${Date.now()}`, challengeId, title, description, proposedApproach, expectedImpact, requiredResources, authorId: req.user.sub, status: 'proposed', createdAt: new Date().toISOString() }; demoSolutions.push(s); return s; });
+  const challenge = await withDatabase(() => prisma.challenge.findUnique({ where: { id: challengeId }, select: { authorId: true, title: true } }), () => demoChallenges.find(c => c.id === challengeId));
+  if (challenge?.authorId && challenge.authorId !== req.user.sub) await addNotification(challenge.authorId, 'SOLUTION_SUBMITTED', `A new solution was proposed for "${challenge.title}".`, challengeId);
   res.status(201).json({ data: serialize(solution), demo: !databaseAvailable });
 });
 app.get('/api/solutions/:id', async (req, res) => { const solution = await withDatabase(() => prisma.solution.findUnique({ where: { id: req.params.id }, include: { author: { select: { name: true, role: true } }, comments: true } }), () => demoSolutions.find((s) => s.id === req.params.id)); if (!solution) return res.status(404).json({ error: 'Solution not found.' }); res.json({ data: serialize(solution), demo: !databaseAvailable }); });
@@ -117,7 +217,11 @@ app.post('/api/challenges/:id/collaborate', auth, async (req, res) => {
   if (demoCollaborations.has(key)) return res.status(409).json({ error: 'You are already collaborating on this challenge.' });
   let result;
   if (databaseAvailable) {
-    try { result = await prisma.collaboration.create({ data: { userId: req.user.sub, challengeId: req.params.id } }); }
+    try {
+      const existing = await prisma.collaboration.findFirst({ where: { userId: req.user.sub, challengeId: req.params.id, solutionId: null } });
+      if (existing) return res.status(409).json({ error: 'You are already collaborating on this challenge.' });
+      result = await prisma.collaboration.create({ data: { userId: req.user.sub, challengeId: req.params.id } });
+    }
     catch (error) {
       if (error.code === 'P2002') return res.status(409).json({ error: 'You are already collaborating on this challenge.' });
       if (error.code === 'P2003' || error.code === 'P2025') return res.status(404).json({ error: 'Challenge not found.' });
@@ -128,7 +232,7 @@ app.post('/api/challenges/:id/collaborate', auth, async (req, res) => {
   res.status(201).json({ data: result, demo: !databaseAvailable });
 });
 app.delete('/api/challenges/:id/collaborate', auth, async (req, res) => { await withDatabase(() => prisma.collaboration.delete({ where: { userId_challengeId_solutionId: { userId: req.user.sub, challengeId: req.params.id, solutionId: null } } }), () => demoCollaborations.delete(`${req.user.sub}:${req.params.id}`)); res.json({ data: { withdrawn: true }, demo: !databaseAvailable }); });
-app.post('/api/comments', auth, async (req, res) => { const { body, challengeId, solutionId } = req.body; if (!validateText(body, 2000) || (!challengeId && !solutionId)) return res.status(400).json({ error: 'Comment text and a challenge or solution are required.' }); const comment = await withDatabase(() => prisma.comment.create({ data: { body, challengeId, solutionId, userId: req.user.sub }, include: { user: { select: { name: true, role: true } } } }), () => ({ id: `demo-comment-${Date.now()}`, body, challengeId, solutionId, userId: req.user.sub, user: { name: req.user.name, role: req.user.role }, createdAt: new Date().toISOString() })); res.status(201).json({ data: comment, demo: !databaseAvailable }); });
+app.post('/api/comments', auth, async (req, res) => { const { body, challengeId, solutionId } = req.body; if (!validateText(body, 2000) || (!challengeId && !solutionId) || (challengeId && solutionId)) return res.status(400).json({ error: 'Comment text and exactly one challenge or solution are required.' }); const comment = await withDatabase(() => prisma.comment.create({ data: { body, challengeId, solutionId, userId: req.user.sub }, include: { user: { select: { name: true, role: true } } } }), () => ({ id: `demo-comment-${Date.now()}`, body, challengeId, solutionId, userId: req.user.sub, user: { name: req.user.name, role: req.user.role }, createdAt: new Date().toISOString() })); if (challengeId) { const challenge = await withDatabase(() => prisma.challenge.findUnique({ where: { id: challengeId }, select: { authorId: true, title: true } }), () => demoChallenges.find(c => c.id === challengeId)); if (challenge?.authorId && challenge.authorId !== req.user.sub) await addNotification(challenge.authorId, 'COMMENT', `A new discussion message was posted on "${challenge.title}".`, challengeId); } res.status(201).json({ data: comment, demo: !databaseAvailable }); });
 app.get('/api/organizations', async (_req, res) => { const organizations = await withDatabase(() => prisma.organization.findMany({ include: { _count: { select: { users: true, challenges: true } } }, orderBy: { name: 'asc' } }), () => []); res.json({ data: organizations, demo: !databaseAvailable }); });
 app.get('/api/admin/users', auth, adminOnly, async (_req, res) => { const users = await withDatabase(() => prisma.user.findMany({ select: { id: true, name: true, email: true, role: true, createdAt: true } }), () => [...demoUsers.values()].map(({ passwordHash, ...u }) => u)); res.json({ data: users, demo: !databaseAvailable }); });
 export default app;

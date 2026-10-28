@@ -1,51 +1,88 @@
-# CivicBridge Phase 2
+# CivicBridge Phase 3
 
-CivicBridge is a community-first civic challenge platform. Residents can explore local challenges, submit ideas, and track progress; administrators and partners get a lightweight dashboard.
+CivicBridge is a community-first civic challenge platform for reporting societal challenges and coordinating transparent, evidence-based collaboration.
 
 ## Structure
 
-- `frontend/` React + Vite + JavaScript + Tailwind-style utility CSS
-- `backend/` Node.js + Express + Prisma + PostgreSQL REST API
+- `frontend/`: React, Vite, JavaScript, and Tailwind-compatible styling
+- `backend/`: Node.js, Express, Prisma, PostgreSQL REST API
 
 ## Run locally
 
-1. Copy `backend/.env.example` to `backend/.env`, set `DATABASE_URL`, and replace `JWT_SECRET` with a long random value (the API can run without a database using clearly-labelled demo fallback data).
-2. Install and start the API:
-   ```sh
-   cd backend && npm install && npm run dev
-   ```
-3. In another terminal install and start the frontend:
-   ```sh
-   cd frontend && npm install && npm run dev
-   ```
-4. Visit the URL printed by Vite (normally http://localhost:5173).
+1. Copy `backend/.env.example` to `backend/.env`.
+2. Set `DATABASE_URL` and replace `JWT_SECRET` with a long random value.
+3. Start the API:
 
-For a real database, run `npm run prisma:generate` and `npm run prisma:migrate` in `backend`.
+   ```sh
+   cd backend
+   npm install
+   npm run dev
+   ```
 
-Challenge categories are: Education, Healthcare, Environment, Public Infrastructure,
-Women's Safety, Employment, Accessibility, and Other. Registration requires a password
-of at least eight characters; passwords are stored as bcrypt hashes, never plaintext.
-The challenge form captures expected impact, supporting information, and proposed solutions.
-Challenge statuses are `open`, `in-progress`, and `resolved`; explore supports category,
-location, status, search, and sort filters. Phase 2 adds JWT authentication, bcrypt password
-hashing, role-safe registration, profiles, personalized dashboards, solution proposals,
-collaboration interest, discussions, organizations, and authorization middleware. Public
-registration supports Citizen, Student, Researcher, Industry Partner, and Government
-Representative; Administrator is never accepted from public registration.
+4. In another terminal, start the frontend:
+
+   ```sh
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+The API uses clearly labelled in-memory demo fallback data when PostgreSQL is unavailable. Demo data is not persistent.
+
+## Phase 3 capabilities
+
+- Transparent keyword-based category suggestions with manual override
+- Similar-challenge detection using normalized token overlap
+- Explainable recommendations based on categories and locations from user activity
+- Challenge progress updates and chronological timelines
+- Evidence-aware expected impact versus reported progress updates
+- Recipient-scoped in-app notifications with unread counts and read actions
+- Administrator-only analytics for status/category totals, solutions, and collaborations
+- Search across title, description, and location
+- Category, status, and location filters
+- Newest, oldest, relevant, and popular sorting
+- Bounded pagination
+
+Supported challenge categories are Education, Healthcare, Environment, Public Infrastructure, Women's Safety, Employment, Accessibility, and Other.
 
 ## API
 
-Public endpoints include `GET /api/health`, `GET /api/challenges`, `GET /api/challenges/:id`, and `GET /api/dashboard/stats`. Authentication endpoints are `POST /api/auth/register`, `POST /api/auth/login`, and `POST /api/auth/logout`; registration supports Citizen, Student, Researcher, Industry Partner, and Government Representative. Administrator accounts are never accepted through public registration and must be seeded/provisioned through a protected admin process. Send the returned JWT as `Authorization: Bearer <token>` to use `GET /api/profile`, `GET /api/dashboard`, authenticated challenge creation, solution submission, collaboration, and comments. Demo fallback responses include `demo: true`.
+Public endpoints:
 
-Authenticated requests send `Authorization: Bearer <JWT>`. Protected endpoints include
-`GET/PATCH /api/profile`, `GET /api/dashboard`, authenticated `POST /api/challenges`,
-`POST /api/solutions`, `GET /api/solutions/:id`, `POST/DELETE /api/challenges/:id/collaborate`,
-and `POST /api/comments`. Public `GET /api/organizations` lists configured records. Demo
-fallback responses include `demo: true`; they are not persistent database records.
+- `GET /api/health`
+- `GET /api/challenges`
+- `GET /api/challenges/:id`
+- `GET /api/challenges/suggest-category`
+- `GET /api/challenges/duplicates`
+- `GET /api/dashboard/stats`
+- `GET /api/organizations`
+
+Authentication endpoints:
+
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+
+Send the returned JWT in `Authorization: Bearer <JWT>` for protected endpoints.
+
+Phase 2 protected endpoints include profile, personalized dashboard, authenticated challenge and solution creation, collaboration, and discussion routes.
+
+Phase 3 endpoints include:
+
+- `POST /api/challenges/preview`
+- `GET /api/recommendations`
+- `GET /api/challenges/:id/timeline`
+- `POST /api/challenges/:id/progress`
+- `PATCH /api/challenges/:id/status`
+- `GET /api/notifications`
+- `PATCH /api/notifications/:id/read`
+- `GET /api/admin/analytics` (administrator only)
 
 ## Database migrations
 
-After configuring PostgreSQL, generate the client and apply a forward-only migration:
+The Phase 3 schema adds progress updates, notifications, recommendations, indexes, and relations while preserving existing models.
+
+After configuring PostgreSQL:
 
 ```sh
 cd backend
@@ -53,9 +90,14 @@ npm run prisma:generate
 npm run prisma:migrate
 ```
 
-Do not reset an existing database. Migration execution was not performed in this environment
-because no PostgreSQL connection was configured.
+Do not reset an existing database. A live migration was not run in this environment because no PostgreSQL connection was configured.
 
-## Checks
+## Validation
 
-Run `npm run build` in `frontend` and `npm run check` in `backend`.
+```sh
+npm --prefix frontend run build
+npm --prefix backend run check
+npm --prefix backend run prisma:generate
+```
+
+Production deployments must configure `JWT_SECRET`, `DATABASE_URL`, `CLIENT_URL`, and `PORT` through environment variables. No external AI, email, SMS, or paid service is required.

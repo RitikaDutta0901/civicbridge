@@ -26,6 +26,10 @@ enum SolutionStatus {
   accepted
   rejected
 }
+enum ProgressUpdateType {
+  STATUS
+  UPDATE
+}
 
 model User {
   id           String      @id @default(cuid())
@@ -40,6 +44,9 @@ model User {
   solutions    Solution[] @relation("AuthorSolutions")
   comments     Comment[]
   collaborations Collaboration[]
+  progressUpdates ProgressUpdate[]
+  notifications Notification[]
+  recommendations Recommendation[]
 }
 
 model Challenge {
@@ -62,6 +69,14 @@ model Challenge {
   organizations Organization[]
   comments     Comment[]
   collaborations Collaboration[]
+  timeline ProgressUpdate[] @relation("ChallengeProgress")
+  notifications Notification[] @relation("ChallengeNotifications")
+  recommendations Recommendation[]
+  @@index([authorId, createdAt])
+  @@index([category, createdAt])
+  @@index([status, createdAt])
+  @@index([location, createdAt])
+  @@index([title])
 }
 
 model Solution {
@@ -127,4 +142,44 @@ model Comment {
   createdAt DateTime @default(now())
   @@index([challengeId])
   @@index([solutionId])
+}
+
+model ProgressUpdate {
+  id String @id @default(cuid())
+  challengeId String
+  challenge Challenge @relation("ChallengeProgress", fields: [challengeId], references: [id], onDelete: Cascade)
+  authorId String
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  type ProgressUpdateType @default(UPDATE)
+  status ChallengeStatus?
+  body String
+  createdAt DateTime @default(now())
+  @@index([challengeId, createdAt])
+  @@index([authorId, createdAt])
+}
+
+model Notification {
+  id String @id @default(cuid())
+  recipientId String
+  recipient User @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  challengeId String?
+  challenge Challenge? @relation("ChallengeNotifications", fields: [challengeId], references: [id], onDelete: Cascade)
+  type String
+  message String
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([recipientId, readAt, createdAt])
+  @@index([challengeId, createdAt])
+}
+
+model Recommendation {
+  id String @id @default(cuid())
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  challengeId String
+  challenge Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  score Int @default(0)
+  createdAt DateTime @default(now())
+  @@unique([userId, challengeId])
+  @@index([userId, score])
 }
