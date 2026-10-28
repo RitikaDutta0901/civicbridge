@@ -12,17 +12,34 @@ enum ChallengeStatus {
   in_progress
   resolved
 }
+enum UserRole {
+  CITIZEN
+  STUDENT
+  RESEARCHER
+  INDUSTRY_PARTNER
+  GOVERNMENT_REPRESENTATIVE
+  ADMINISTRATOR
+}
+enum SolutionStatus {
+  proposed
+  under_review
+  accepted
+  rejected
+}
 
 model User {
   id           String      @id @default(cuid())
   name         String
   email        String      @unique
   passwordHash String
-  role         String      @default("resident")
+  role         UserRole    @default(CITIZEN)
   createdAt    DateTime    @default(now())
   challenges   Challenge[] @relation("AuthorChallenges")
   votes        Vote[]
   organizations Organization[]
+  solutions    Solution[] @relation("AuthorSolutions")
+  comments     Comment[]
+  collaborations Collaboration[]
 }
 
 model Challenge {
@@ -43,15 +60,27 @@ model Challenge {
   voteRecords Vote[]
   solutions   Solution[]
   organizations Organization[]
+  comments     Comment[]
+  collaborations Collaboration[]
 }
 
 model Solution {
   id          String    @id @default(cuid())
   title       String
   description String
+  proposedApproach String?
+  expectedImpact String?
+  requiredResources String?
+  authorId String?
+  author User? @relation("AuthorSolutions", fields: [authorId], references: [id])
+  status SolutionStatus @default(proposed)
   challengeId String
   challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
   createdAt   DateTime  @default(now())
+  comments Comment[]
+  collaborations Collaboration[]
+  @@index([challengeId])
+  @@index([authorId])
 }
 
 model Organization {
@@ -71,4 +100,31 @@ model Vote {
   challenge   Challenge @relation(fields: [challengeId], references: [id])
   createdAt   DateTime  @default(now())
   @@unique([userId, challengeId])
+}
+
+model Collaboration {
+  id String @id @default(cuid())
+  userId String
+  challengeId String?
+  solutionId String?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  challenge Challenge? @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  solution Solution? @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([userId, challengeId, solutionId])
+  @@index([challengeId])
+}
+
+model Comment {
+  id String @id @default(cuid())
+  body String
+  userId String
+  challengeId String?
+  solutionId String?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  challenge Challenge? @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  solution Solution? @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@index([challengeId])
+  @@index([solutionId])
 }
