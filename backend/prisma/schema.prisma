@@ -40,7 +40,17 @@ model User {
   createdAt    DateTime    @default(now())
   challenges   Challenge[] @relation("AuthorChallenges")
   votes        Vote[]
-  organizations Organization[]
+  organizationMemberships OrganizationMembership[]
+  membershipRequests OrganizationMembershipRequest[] @relation("MembershipRequester")
+  ownedProjects Project[] @relation("ProjectOwner")
+  projectMemberships ProjectTeamMembership[]
+  projectTeamRequests ProjectTeamRequest[] @relation("ProjectTeamRequester")
+  assignedTasks Task[] @relation("TaskAssignee")
+  createdTasks Task[] @relation("TaskCreator")
+  evaluations SolutionEvaluation[]
+  submittedDeliverables Deliverable[] @relation("DeliverableSubmitter")
+  reviewedDeliverables Deliverable[] @relation("DeliverableReviewer")
+  activities ActivityRecord[]
   solutions    Solution[] @relation("AuthorSolutions")
   comments     Comment[]
   collaborations Collaboration[]
@@ -72,6 +82,7 @@ model Challenge {
   timeline ProgressUpdate[] @relation("ChallengeProgress")
   notifications Notification[] @relation("ChallengeNotifications")
   recommendations Recommendation[]
+  projects Project[]
   @@index([authorId, createdAt])
   @@index([category, createdAt])
   @@index([status, createdAt])
@@ -94,6 +105,8 @@ model Solution {
   createdAt   DateTime  @default(now())
   comments Comment[]
   collaborations Collaboration[]
+  evaluations SolutionEvaluation[]
+  projects Project[]
   @@index([challengeId])
   @@index([authorId])
 }
@@ -102,9 +115,219 @@ model Organization {
   id          String       @id @default(cuid())
   name        String       @unique
   description String?
+  organizationType String?
+  expertise   String?
   createdAt   DateTime     @default(now())
-  users       User[]
+  memberships OrganizationMembership[]
+  membershipRequests OrganizationMembershipRequest[]
   challenges  Challenge[]
+  projects    Project[]
+  @@index([createdAt])
+}
+
+enum MembershipRequestStatus {
+  pending
+  approved
+  rejected
+  withdrawn
+}
+enum ProjectStatus {
+  proposed
+  active
+  paused
+  completed
+  archived
+}
+enum TeamRequestStatus {
+  pending
+  approved
+  rejected
+  withdrawn
+}
+enum MilestoneStatus {
+  planned
+  in_progress
+  completed
+  blocked
+}
+enum TaskStatus {
+  todo
+  in_progress
+  blocked
+  done
+}
+enum DeliverableStatus {
+  draft
+  submitted
+  approved
+  changes_requested
+  rejected
+}
+
+model OrganizationMembership {
+  id String @id @default(cuid())
+  organizationId String
+  userId String
+  role String @default("member")
+  createdAt DateTime @default(now())
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model OrganizationMembershipRequest {
+  id String @id @default(cuid())
+  organizationId String
+  requesterId String
+  message String?
+  status MembershipRequestStatus @default(pending)
+  reviewedById String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requester User @relation("MembershipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  @@unique([organizationId, requesterId, status])
+  @@index([organizationId, status, createdAt])
+}
+
+model Project {
+  id String @id @default(cuid())
+  organizationId String
+  ownerId String
+  name String
+  description String
+  status ProjectStatus @default(proposed)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner User @relation("ProjectOwner", fields: [ownerId], references: [id])
+  team ProjectTeamMembership[]
+  teamRequests ProjectTeamRequest[]
+  milestones Milestone[]
+  tasks Task[]
+  evaluations SolutionEvaluation[]
+  deliverables Deliverable[]
+  activities ActivityRecord[]
+  challengeId String?
+  solutionId String?
+  challenge Challenge? @relation(fields: [challengeId], references: [id], onDelete: SetNull)
+  solution Solution? @relation(fields: [solutionId], references: [id], onDelete: SetNull)
+  @@index([organizationId, status, createdAt])
+  @@index([ownerId])
+  @@index([challengeId])
+  @@index([solutionId])
+}
+
+model ProjectTeamMembership {
+  id String @id @default(cuid())
+  projectId String
+  userId String
+  role String @default("member")
+  createdAt DateTime @default(now())
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+model ProjectTeamRequest {
+  id String @id @default(cuid())
+  projectId String
+  requesterId String
+  message String?
+  status TeamRequestStatus @default(pending)
+  reviewedById String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requester User @relation("ProjectTeamRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  @@unique([projectId, requesterId, status])
+  @@index([projectId, status, createdAt])
+}
+
+model Milestone {
+  id String @id @default(cuid())
+  projectId String
+  name String
+  description String?
+  dueDate DateTime?
+  status MilestoneStatus @default(planned)
+  createdAt DateTime @default(now())
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks Task[]
+  @@index([projectId, status, dueDate])
+}
+
+model Task {
+  id String @id @default(cuid())
+  projectId String
+  milestoneId String?
+  assigneeId String?
+  creatorId String
+  title String
+  description String?
+  status TaskStatus @default(todo)
+  dueDate DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  milestone Milestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  assignee User? @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  creator User @relation("TaskCreator", fields: [creatorId], references: [id])
+  @@index([projectId, status])
+  @@index([assigneeId, status])
+}
+
+model SolutionEvaluation {
+  id String @id @default(cuid())
+  projectId String
+  solutionId String
+  evaluatorId String
+  impact Int
+  feasibility Int
+  sustainability Int
+  equity Int
+  innovation Int
+  comments String?
+  createdAt DateTime @default(now())
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  solution Solution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  evaluator User @relation(fields: [evaluatorId], references: [id], onDelete: Cascade)
+  @@unique([projectId, solutionId, evaluatorId])
+  @@index([projectId, createdAt])
+}
+
+model Deliverable {
+  id String @id @default(cuid())
+  projectId String
+  submittedById String
+  reviewerId String?
+  title String
+  description String?
+  externalUrl String
+  urlHost String
+  status DeliverableStatus @default(draft)
+  reviewerFeedback String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  submittedBy User @relation("DeliverableSubmitter", fields: [submittedById], references: [id])
+  reviewer User? @relation("DeliverableReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  @@index([projectId, status, createdAt])
+}
+
+model ActivityRecord {
+  id String @id @default(cuid())
+  projectId String
+  actorId String?
+  type String
+  message String
+  metadata Json?
+  createdAt DateTime @default(now())
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  @@index([projectId, createdAt])
 }
 
 model Vote {

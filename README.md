@@ -1,4 +1,4 @@
-# CivicBridge Phase 3
+# CivicBridge Phase 4
 
 CivicBridge is a community-first civic challenge platform for reporting societal challenges and coordinating transparent, evidence-based collaboration.
 
@@ -78,14 +78,29 @@ Phase 3 endpoints include:
 - `PATCH /api/notifications/:id/read`
 - `GET /api/admin/analytics` (administrator only)
 
+Phase 4 collaboration endpoints include organization profiles (including type and
+expertise) and membership requests, projects linked optionally to challenges or
+solutions, and team requests (`/api/projects`, `/api/projects/:projectId/team-requests`),
+milestones and tasks, five-criteria solution evaluations, URL-validated deliverables,
+paginated project activity (`/api/projects/:id/activity`), and project dashboard
+aggregates (`/api/projects/:id/dashboard`). Mutating endpoints require a bearer
+token; organization/project management checks role and membership, duplicate requests
+and evaluations return `409`, invalid IDs return `400/404`, and invalid state
+transitions are rejected. The frontend includes organization, project workspace,
+team, task, milestone, deliverable, evaluation, activity, and dashboard views.
+
 ## Database migrations
 
-The Phase 3 schema adds progress updates, notifications, recommendations, indexes, and relations while preserving existing models.
+The Phase 4 schema adds explicit organization membership and request records,
+projects, team membership/requests, milestones, tasks, evaluations, deliverables,
+and activity records with composite uniqueness constraints and query indexes while
+preserving all Phase 1-3 models and APIs. Generate and migrate without resetting:
 
 After configuring PostgreSQL:
 
 ```sh
 cd backend
+DATABASE_URL=... npx prisma validate
 npm run prisma:generate
 npm run prisma:migrate
 ```
