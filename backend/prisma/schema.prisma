@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ChallengeStatus {
+  open
+  in_progress
+  resolved
+}
+
+model User {
+  id           String      @id @default(cuid())
+  name         String
+  email        String      @unique
+  passwordHash String
+  role         String      @default("resident")
+  createdAt    DateTime    @default(now())
+  challenges   Challenge[] @relation("AuthorChallenges")
+  votes        Vote[]
+  organizations Organization[]
+}
+
+model Challenge {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  expectedImpact String
+  supportingInformation String?
+  proposedSolutions String?
+  category    String
+  location    String
+  status      ChallengeStatus @default(open)
+  votes       Int      @default(0)
+  authorId    String?
+  author      User?    @relation("AuthorChallenges", fields: [authorId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  voteRecords Vote[]
+  solutions   Solution[]
+  organizations Organization[]
+}
+
+model Solution {
+  id          String    @id @default(cuid())
+  title       String
+  description String
+  challengeId String
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+}
+
+model Organization {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  description String?
+  createdAt   DateTime     @default(now())
+  users       User[]
+  challenges  Challenge[]
+}
+
+model Vote {
+  id          String    @id @default(cuid())
+  userId      String
+  challengeId String
+  user        User      @relation(fields: [userId], references: [id])
+  challenge   Challenge @relation(fields: [challengeId], references: [id])
+  createdAt   DateTime  @default(now())
+  @@unique([userId, challengeId])
+}
