@@ -57,6 +57,8 @@ model User {
   progressUpdates ProgressUpdate[]
   notifications Notification[]
   recommendations Recommendation[]
+  submittedReports ModerationReport[] @relation("ReportReporter")
+  reviewedReports ModerationReport[] @relation("ReportReviewer")
 }
 
 model Challenge {
@@ -88,6 +90,7 @@ model Challenge {
   @@index([status, createdAt])
   @@index([location, createdAt])
   @@index([title])
+  reports ModerationReport[]
 }
 
 model Solution {
@@ -107,6 +110,7 @@ model Solution {
   collaborations Collaboration[]
   evaluations SolutionEvaluation[]
   projects Project[]
+  reports ModerationReport[]
   @@index([challengeId])
   @@index([authorId])
 }
@@ -162,6 +166,34 @@ enum DeliverableStatus {
   approved
   changes_requested
   rejected
+}
+enum ModerationStatus {
+  pending
+  reviewed
+  dismissed
+  actioned
+}
+
+model ModerationReport {
+  id String @id @default(cuid())
+  reporterId String
+  challengeId String?
+  solutionId String?
+  reason String
+  details String?
+  status ModerationStatus @default(pending)
+  moderatorId String?
+  resolution String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  reporter User @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  moderator User? @relation("ReportReviewer", fields: [moderatorId], references: [id], onDelete: SetNull)
+  challenge Challenge? @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  solution Solution? @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  @@index([status, createdAt])
+  @@index([challengeId])
+  @@index([solutionId])
+  @@unique([reporterId, challengeId, solutionId])
 }
 
 model OrganizationMembership {

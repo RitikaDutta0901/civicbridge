@@ -17,6 +17,7 @@ const demoComments = [];
 const demoCollaborations = new Set();
 const demoProgress = new Map();
 const demoNotifications = new Map();
+const demoReports = [];
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
 app.use(express.json({ limit: '1mb' }));
 
@@ -190,6 +191,79 @@ app.get('/api/admin/analytics', auth, adminOnly, async (_req, res) => {
     return { total, byStatus, byCategory, recent, solutions, collaborations };
   }, () => ({ total: demoChallenges.length, byStatus: ['open', 'in-progress', 'resolved'].map(status => ({ status, _count: demoChallenges.filter(c => c.status === status).length })), byCategory: [...new Set(demoChallenges.map(c => c.category))].map(category => ({ category, _count: demoChallenges.filter(c => c.category === category).length })), recent: demoChallenges.length }));
   res.json({ data, demo: !databaseAvailable });
+});
+app.get('/api/admin/insights', auth, adminOnly, async (_req, res) => {
+  const data = await withDatabase(async () => {
+    const [challenges, solutions, collaborations] = await Promise.all([
+      prisma.challenge.findMany({ select: { id: true, category: true, location: true, status: true, authorId: true, createdAt: true } }),
+      prisma.solution.findMany({ select: { challengeId: true, authorId: true, createdAt: true } }),
+      prisma.collaboration.findMany({ select: { userId: true, challengeId: true } })
+    ]);
+    const categories = [...new Set(challenges.map(item => item.category))].map(category => ({ category, count: challenges.filter(item => item.category === category).length })).sort((a, b) => b.count - a.count);
+    const locations = [...new Set(challenges.map(item => item.location))].map(location => ({ location, count: challenges.filter(item => item.location === location).length })).sort((a, b) => b.count - a.count).slice(0, 10);
+    const statuses = ['open', 'in_progress', 'resolved'].map(status => ({ status, count: challenges.filter(item => item.status === status).length }));
+    const months = [...new Set(challenges.map(item => item.createdAt.toISOString().slice(0, 7)))].sort().map(month => ({ month, challenges: challenges.filter(item => item.createdAt.toISOString().startsWith(month)).length, solutions: solutions.filter(item => item.createdAt.toISOString().startsWith(month)).length }));
+    const engagement = challenges.map(item => ({ id: item.id, title: item.title, engagement: solutions.filter(solution => solution.challengeId === item.id).length + collaborations.filter(collaboration => collaboration.challengeId === item.id).length })).sort((a, b) => a.engagement - b.engagement).slice(0, 10);
+    return { totalChallenges: challenges.length, totalSolutions: solutions.length, activeContributors: new Set([...challenges.map(item => item.authorId), ...solutions.map(item => item.authorId), ...collaborations.map(item => item.userId)].filter(Boolean)).size, categories, locations, statuses, monthlyTrends: months, limitedEngagement: engagement };
+  }, () => {
+    const categories = [...new Set(demoChallenges.map(item => item.category))].map(category => ({ category, count: demoChallenges.filter(item => item.category === category).length })).sort((a, b) => b.count - a.count);
+    const locations = [...new Set(demoChallenges.map(item => item.location))].map(location => ({ location, count: demoChallenges.filter(item => item.location === location).length })).sort((a, b) => b.count - a.count);
+    const statuses = ['open', 'in-progress', 'resolved'].map(status => ({ status, count: demoChallenges.filter(item => item.status === status).length }));
+    const monthlyTrends = [...new Set(demoChallenges.map(item => item.createdAt.slice(0, 7)))].sort().map(month => ({ month, challenges: demoChallenges.filter(item => item.createdAt.startsWith(month)).length, solutions: demoSolutions.filter(item => item.createdAt.startsWith(month)).length }));
+    return { totalChallenges: demoChallenges.length, totalSolutions: demoSolutions.length, activeContributors: new Set([...demoChallenges.map(item => item.authorId), ...demoSolutions.map(item => item.authorId)].filter(Boolean)).size, categories, locations, statuses, monthlyTrends, limitedEngagement: demoChallenges.map(item => ({ id: item.id, title: item.title, engagement: demoSolutions.filter(solution => solution.challengeId === item.id).length })).sort((a, b) => a.engagement - b.engagement).slice(0, 10) };
+  });
+  res.json({ data, demo: !databaseAvailable });
+});
+app.get('/api/search', async (req, res) => {
+  const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (query.length < 2 || query.length > 100) return res.status(400).json({ error: 'Search text must be between 2 and 100 characters.' });
+  const category = req.query.category && req.query.category !== 'All' ? req.query.category : undefined;
+  const status = req.query.status && req.query.status !== 'All' ? (req.query.status === 'in-progress' ? 'in_progress' : req.query.status) : undefined;
+  const result = await withDatabase(async () => {
+    const [challenges, solutions] = await Promise.all([
+      prisma.challenge.findMany({ where: { ...(category ? { category } : {}), ...(status ? { status } : {}), OR: [{ title: { contains: query, mode: 'insensitive' } }, { description: { contains: query, mode: 'insensitive' } }, { category: { contains: query, mode: 'insensitive' } }, { location: { contains: query, mode: 'insensitive' } }] }, select: { id: true, title: true, description: true, category: true, location: true, status: true, createdAt: true } }),
+      prisma.solution.findMany({ where: { OR: [{ title: { contains: query, mode: 'insensitive' } }, { description: { contains: query, mode: 'insensitive' } }, { proposedApproach: { contains: query, mode: 'insensitive' } }] }, include: { challenge: { select: { id: true, title: true } } }, take: 50 })
+    ]);
+    return [...challenges.map(item => ({ type: 'challenge', ...serialize(item) })), ...solutions.map(item => ({ type: 'solution', id: item.id, title: item.title, description: item.description, challenge: item.challenge, createdAt: item.createdAt }))];
+  }, () => [...demoChallenges.filter(item => (!category || item.category === category) && (!status || item.status === status) && `${item.title} ${item.description} ${item.category} ${item.location}`.toLowerCase().includes(query.toLowerCase())).map(item => ({ type: 'challenge', ...item })), ...demoSolutions.filter(item => `${item.title} ${item.description} ${item.proposedApproach || ''}`.toLowerCase().includes(query.toLowerCase())).map(item => ({ type: 'solution', ...item }))]);
+  res.json({ ...paginate(result, req.query.page, req.query.limit), demo: !databaseAvailable });
+});
+app.get('/api/challenges/:id/impact-report', async (req, res) => {
+  const report = await withDatabase(async () => {
+    const challenge = await prisma.challenge.findUnique({ where: { id: req.params.id }, include: { solutions: { select: { id: true, title: true, status: true, authorId: true, createdAt: true } }, collaborations: { select: { userId: true } }, timeline: { orderBy: { createdAt: 'asc' }, select: { id: true, type: true, status: true, body: true, createdAt: true } } } });
+    if (!challenge) return null;
+    return { id: challenge.id, title: challenge.title, category: challenge.category, location: challenge.location, status: challenge.status, expectedImpact: challenge.expectedImpact, solutions: challenge.solutions, solutionCount: challenge.solutions.length, contributorCount: new Set([...challenge.collaborations.map(item => item.userId), ...challenge.solutions.map(item => item.authorId)].filter(Boolean)).size, progressHistory: challenge.timeline, recordedOutcomes: challenge.timeline.filter(item => item.type === 'UPDATE').map(item => ({ body: item.body, recordedAt: item.createdAt })) };
+  }, () => {
+    const challenge = demoChallenges.find(item => item.id === req.params.id);
+    if (!challenge) return null;
+    const solutions = demoSolutions.filter(item => item.challengeId === challenge.id);
+    const timeline = demoProgress.get(challenge.id) || [];
+    return { id: challenge.id, title: challenge.title, category: challenge.category, location: challenge.location, status: challenge.status, expectedImpact: challenge.expectedImpact, solutions, solutionCount: solutions.length, contributorCount: new Set(solutions.map(item => item.authorId).filter(Boolean)).size, progressHistory: timeline, recordedOutcomes: timeline.filter(item => item.type === 'UPDATE').map(item => ({ body: item.body, recordedAt: item.createdAt })) };
+  });
+  if (!report) return res.status(404).json({ error: 'Challenge not found.' });
+  res.json({ data: report, demo: !databaseAvailable });
+});
+app.post('/api/reports', auth, async (req, res) => {
+  const { challengeId, solutionId, reason, details } = req.body;
+  if ((!challengeId && !solutionId) || (challengeId && solutionId) || !validateText(reason, 120) || (details && !validateText(details, 2000))) return res.status(400).json({ error: 'Select one valid content item and provide a reason.' });
+  try {
+    const report = await withDatabase(() => prisma.moderationReport.create({ data: { reporterId: req.user.sub, challengeId, solutionId, reason: reason.trim(), details } }), () => {
+      if (demoReports.some(item => item.reporterId === req.user.sub && item.challengeId === challengeId && item.solutionId === solutionId && item.status === 'pending')) { const error = new Error('Duplicate report'); error.code = 'P2002'; throw error; }
+      const item = { id: `demo-report-${Date.now()}`, reporterId: req.user.sub, challengeId, solutionId, reason: reason.trim(), details, status: 'pending', createdAt: new Date().toISOString() }; demoReports.push(item); return item;
+    });
+    res.status(201).json({ data: report, demo: !databaseAvailable });
+  } catch (error) { res.status(error.code === 'P2002' ? 409 : 404).json({ error: error.code === 'P2002' ? 'You have already reported this content.' : 'Content not found.' }); }
+});
+app.get('/api/admin/reports', auth, adminOnly, async (req, res) => {
+  const reports = await withDatabase(() => prisma.moderationReport.findMany({ include: { reporter: { select: { id: true, name: true } }, challenge: { select: { id: true, title: true } }, solution: { select: { id: true, title: true } } }, orderBy: { createdAt: 'desc' } }), () => demoReports);
+  res.json({ ...paginate(reports, req.query.page, req.query.limit), demo: !databaseAvailable });
+});
+app.patch('/api/admin/reports/:id', auth, adminOnly, async (req, res) => {
+  if (!['reviewed', 'dismissed', 'actioned'].includes(req.body.status)) return res.status(400).json({ error: 'Invalid moderation status.' });
+  const report = await withDatabase(() => prisma.moderationReport.update({ where: { id: req.params.id }, data: { status: req.body.status, moderatorId: req.user.sub, resolution: validateText(req.body.resolution, 2000) ? req.body.resolution : undefined } }), () => demoReports.find(item => item.id === req.params.id));
+  if (!report) return res.status(404).json({ error: 'Report not found.' });
+  if (!databaseAvailable) { report.status = req.body.status; report.moderatorId = req.user.sub; report.resolution = req.body.resolution; }
+  res.json({ data: report, demo: !databaseAvailable });
 });
 app.get('/api/notifications', auth, async (req, res) => {
   const unreadOnly = req.query.unread === 'true';
