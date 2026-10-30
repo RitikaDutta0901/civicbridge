@@ -7,8 +7,8 @@ import jwt from 'jsonwebtoken';
 
 const app = express();
 const prisma = new PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'civicbridge-development-only-secret');
-if (!JWT_SECRET) throw new Error('JWT_SECRET must be configured in production.');
+const JWT_SECRET = process.env.JWT_SECRET || (['development', 'test'].includes(process.env.NODE_ENV) ? 'civicbridge-development-only-secret' : '');
+if (!JWT_SECRET) throw new Error('JWT_SECRET must be configured outside development and test environments.');
 const roles = ['CITIZEN', 'STUDENT', 'RESEARCHER', 'INDUSTRY_PARTNER', 'GOVERNMENT_REPRESENTATIVE'];
 let databaseAvailable = true;
 const demoUsers = new Map();
@@ -18,8 +18,26 @@ const demoCollaborations = new Set();
 const demoProgress = new Map();
 const demoNotifications = new Map();
 const demoReports = [];
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
+const requestCounts = new Map();
+const configuredOrigin = process.env.CLIENT_URL || 'http://localhost:5173';
+app.use(cors({ origin: configuredOrigin, methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
+function rateLimit(limit, windowMs) {
+  return (req, res, next) => {
+    const key = `${req.ip}:${req.path}`;
+    const now = Date.now();
+    const current = requestCounts.get(key);
+    if (!current || now - current.startedAt >= windowMs) requestCounts.set(key, { startedAt: now, count: 1 });
+    else if (++current.count > limit) return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    next();
+  };
+}
 
 async function withDatabase(action, fallback) {
   if (!databaseAvailable) return fallback();
@@ -36,7 +54,21 @@ function auth(req, res, next) {
   if (!header?.startsWith('Bearer ')) return res.status(401).json({ error: 'Authentication required.' });
   try { req.user = jwt.verify(header.slice(7), JWT_SECRET); next(); } catch { return res.status(401).json({ error: 'Invalid or expired token.' }); }
 }
-function adminOnly(req, res, next) { return req.user.role === 'ADMINISTRATOR' ? next() : res.status(403).json({ error: 'Administrator access required.' }); }
+async function adminOnly(req, res, next) {
+  if (databaseAvailable) {
+    try {
+      const current = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { role: true } });
+      if (current?.role !== 'ADMINISTRATOR') return res.status(403).json({ error: 'Administrator access required.' });
+      req.user.role = current.role;
+      return next();
+    } catch (error) {
+      console.warn('Unable to verify administrator role:', error.message);
+      databaseAvailable = false;
+      return req.user.role === 'ADMINISTRATOR' ? next() : res.status(403).json({ error: 'Administrator access required.' });
+    }
+  }
+  return req.user.role === 'ADMINISTRATOR' ? next() : res.status(403).json({ error: 'Administrator access required.' });
+}
 function validateText(value, max = 5000) { return typeof value === 'string' && value.trim().length > 0 && value.length <= max; }
 const categoryRules = [
   ['Healthcare', /\b(health|clinic|hospital|mental|doctor|care)\b/i],
@@ -131,7 +163,7 @@ app.get('/api/challenges/:id/timeline', async (req, res) => {
   const timeline = await withDatabase(() => prisma.progressUpdate.findMany({ where: { challengeId: req.params.id }, include: { author: { select: { name: true, role: true } } }, orderBy: { createdAt: 'asc' } }), () => demoProgress.get(req.params.id) || []);
   res.json({ data: timeline.map(serialize), demo: !databaseAvailable });
 });
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', rateLimit(10, 15 * 60 * 1000), async (req, res) => {
   const { name, email, password, confirmPassword, role = 'CITIZEN' } = req.body;
   if (!validateText(name, 100) || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || '') || !password || password.length < 8 || password !== confirmPassword || !roles.includes(role)) return res.status(400).json({ error: 'Name, valid email, matching passwords of at least 8 characters, and a valid role are required.' });
   const passwordHash = await bcrypt.hash(password, 12);
@@ -149,7 +181,7 @@ app.post('/api/auth/register', async (req, res) => {
   const safe = { id: user.id, name: user.name, email: user.email, role: user.role };
   res.status(201).json({ data: { ...safe, token: tokenFor(safe) }, demo: !databaseAvailable });
 });
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', rateLimit(10, 15 * 60 * 1000), async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
   const user = await withDatabase(async () => { const found = await prisma.user.findUnique({ where: { email: email.toLowerCase() } }); return found && await bcrypt.compare(password, found.passwordHash) ? found : null; }, async () => { const found = demoUsers.get(email.toLowerCase()); return found && await bcrypt.compare(password, found.passwordHash) ? found : null; });
@@ -326,6 +358,7 @@ const manager = (req) => ['ADMINISTRATOR', 'GOVERNMENT_REPRESENTATIVE'].includes
 const projectId = (req) => req.params.projectId || req.params.id;
 async function projectFor(id) { return withDatabase(() => prisma.project.findUnique({ where: { id }, include: { team: true } }), () => demoProjects.get(id)); }
 async function isProjectMember(req, id) { const p = await projectFor(id); return p && (p.ownerId === req.user.sub || p.team?.some(m => m.userId === req.user.sub) || manager(req)); }
+async function isProjectManager(req, id) { const p = await projectFor(id); return p && (p.ownerId === req.user.sub || manager(req)); }
 async function canManageOrganization(req, id) {
   if (manager(req)) return true;
   const membership = await withDatabase(
@@ -397,6 +430,6 @@ app.post('/api/projects/:projectId/team-requests', auth, async (req, res) => {
   try { const r = await withDatabase(() => prisma.projectTeamRequest.create({ data: { projectId: req.params.projectId, requesterId: req.user.sub, message: req.body.message } }), () => { if (demoTeamRequests.some(x => x.projectId === req.params.projectId && x.requesterId === req.user.sub && x.status === 'pending')) { const error = new Error('Duplicate team request'); error.code = 'P2002'; throw error; } const x = { id: `demo-team-request-${Date.now()}`, projectId: req.params.projectId, requesterId: req.user.sub, message: req.body.message, status: 'pending', createdAt: new Date().toISOString() }; demoTeamRequests.push(x); return x; }); res.status(201).json({ data: r, demo: !databaseAvailable }); } catch (e) { res.status(statusConflict(e)).json({ error: e.code === 'P2002' ? 'A pending team request already exists.' : 'Project not found.' }); }
 });
 app.get('/api/projects/:projectId/team-requests', auth, async (req, res) => { if (!await isProjectMember(req, req.params.projectId)) return res.status(403).json({ error: 'Project membership required.' }); const items = await withDatabase(() => prisma.projectTeamRequest.findMany({ where: { projectId: req.params.projectId }, orderBy: { createdAt: 'desc' } }), () => demoTeamRequests.filter(r => r.projectId === req.params.projectId)); res.json({ data: items, demo: !databaseAvailable }); });
-app.patch('/api/project-team-requests/:id', auth, async (req, res) => { if (!['approved', 'rejected', 'withdrawn'].includes(req.body.status)) return res.status(400).json({ error: 'Invalid team request status.' }); const current = await withDatabase(() => prisma.projectTeamRequest.findUnique({ where: { id: req.params.id } }), () => demoTeamRequests.find(r => r.id === req.params.id)); if (!current) return res.status(404).json({ error: 'Team request not found.' }); if (current.status !== 'pending') return res.status(409).json({ error: 'Request has already been resolved.' }); if (req.body.status !== 'withdrawn' && !await isProjectMember(req, current.projectId)) return res.status(403).json({ error: 'Project manager access required.' }); const updated = await withDatabase(() => prisma.$transaction(async tx => { const r = await tx.projectTeamRequest.update({ where: { id: req.params.id }, data: { status: req.body.status, reviewedById: req.user.sub } }); if (req.body.status === 'approved') await tx.projectTeamMembership.create({ data: { projectId: r.projectId, userId: r.requesterId } }); return r; }), () => { current.status = req.body.status; return current; }); res.json({ data: updated, demo: !databaseAvailable }); });
+app.patch('/api/project-team-requests/:id', auth, async (req, res) => { if (!['approved', 'rejected', 'withdrawn'].includes(req.body.status)) return res.status(400).json({ error: 'Invalid team request status.' }); const current = await withDatabase(() => prisma.projectTeamRequest.findUnique({ where: { id: req.params.id } }), () => demoTeamRequests.find(r => r.id === req.params.id)); if (!current) return res.status(404).json({ error: 'Team request not found.' }); if (current.status !== 'pending') return res.status(409).json({ error: 'Request has already been resolved.' }); if (req.body.status === 'withdrawn' && current.requesterId !== req.user.sub) return res.status(403).json({ error: 'You can only withdraw your own request.' }); if (req.body.status !== 'withdrawn' && !await isProjectManager(req, current.projectId)) return res.status(403).json({ error: 'Project manager access required.' }); const updated = await withDatabase(() => prisma.$transaction(async tx => { const r = await tx.projectTeamRequest.update({ where: { id: req.params.id }, data: { status: req.body.status, reviewedById: req.user.sub } }); if (req.body.status === 'approved') await tx.projectTeamMembership.create({ data: { projectId: r.projectId, userId: r.requesterId } }); return r; }), () => { current.status = req.body.status; return current; }); res.json({ data: updated, demo: !databaseAvailable }); });
 app.delete('/api/projects/:projectId/team-requests/:id', auth, async (req, res) => { const r = await withDatabase(() => prisma.projectTeamRequest.updateMany({ where: { id: req.params.id, requesterId: req.user.sub, status: 'pending' }, data: { status: 'withdrawn' } }), () => { const x = demoTeamRequests.find(v => v.id === req.params.id && v.requesterId === req.user.sub && v.status === 'pending'); if (x) x.status = 'withdrawn'; return x; }); if (!r || (r.count !== undefined && !r.count)) return res.status(404).json({ error: 'Pending request not found.' }); res.json({ data: { withdrawn: true }, demo: !databaseAvailable }); });
 export default app;

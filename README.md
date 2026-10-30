@@ -1,4 +1,4 @@
-# CivicBridge Phase 5
+# CivicBridge Phase 6
 
 CivicBridge is a community-first civic challenge platform for reporting societal challenges and coordinating transparent, evidence-based collaboration.
 
@@ -179,3 +179,50 @@ npm --prefix frontend run build
 npm --prefix backend run check
 DATABASE_URL=... npm --prefix backend run prisma:validate
 ```
+
+## Phase 6 stabilization and security
+
+The Phase 6 audit verified the existing Phase 1-5 workflows through build checks,
+backend/API smoke tests, authorization failure tests, invalid-input tests, and
+demo-fallback tests. The implementation is not represented as fully secure or
+production-certified; PostgreSQL-backed workflows and browser automation remain
+blocked without a configured database and browser test runner.
+
+Security hardening includes:
+
+- JWT startup now fails closed unless `JWT_SECRET` is explicitly configured outside
+  `development` and `test`.
+- Administrator role checks reload the current database role when PostgreSQL is
+  available.
+- Project team request approval/rejection is restricted to the project owner or
+  authorized manager; ordinary members cannot approve requests.
+- Authentication endpoints have bounded in-memory rate limiting.
+- CORS is restricted to the configured client origin and allowed methods/headers.
+- Basic security response headers are applied (`nosniff`, frame denial, and
+  same-origin referrer policy).
+- Server startup errors and graceful SIGINT/SIGTERM shutdown are handled explicitly.
+
+Dependency validation found no runtime vulnerabilities in the frontend or backend
+production dependency sets. `npm audit` reports three high-severity issues in the
+Prisma CLI's transitive development dependency `deepmerge-ts`; the suggested fix
+requires a breaking Prisma major upgrade and was not applied during stabilization.
+Re-evaluate that upgrade separately with migration testing.
+
+### Phase 6 verification checklist
+
+| Area | Status | Evidence or limitation |
+|---|---|---|
+| Frontend production build | PASS | `npm --prefix frontend run build` |
+| Backend syntax/startup | PASS | `npm --prefix backend run check`; development startup verified |
+| Prisma schema validation | PASS | `prisma validate` with placeholder PostgreSQL URL |
+| Registration/login validation | PASS | Existing API workflow and invalid-input checks |
+| Search, filters, impact reports | PASS | Demo API success, filtering, invalid query checks |
+| Moderation and role authorization | PASS | Authenticated report, duplicate report, 401/403 checks |
+| Project authorization | PASS | Owner/member workflow and request-permission checks |
+| PostgreSQL CRUD/migration | BLOCKED | No live `DATABASE_URL` available |
+| Browser cross-browser testing | BLOCKED | No browser automation runner configured |
+| Production performance benchmark | BLOCKED | No representative PostgreSQL dataset or benchmark environment |
+| Dependency audit | PARTIAL | Runtime audit clean; Prisma CLI transitive issue remains |
+
+No existing database records were deleted or reset during testing. The in-memory
+fallback is for local demonstration only and is not a substitute for PostgreSQL.
