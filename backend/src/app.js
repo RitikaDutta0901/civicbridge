@@ -136,7 +136,7 @@ app.post('/api/challenges/preview', auth, async (req, res) => {
 app.post('/api/challenges', auth, async (req, res) => {
   const { title, description, category, location, expectedImpact, supportingInformation, proposedSolutions } = req.body;
   const validCategories = ['Education', 'Healthcare', 'Environment', 'Public Infrastructure', "Women's Safety", 'Employment', 'Accessibility', 'Other'];
-  if (![title, description, category, location, expectedImpact].every(validateText) || !validCategories.includes(category)) return res.status(400).json({ error: 'Valid title, description, category, location, and expected impact are required.' });
+  if (![title, description, category, location, expectedImpact].every((value) => validateText(value)) || !validCategories.includes(category)) return res.status(400).json({ error: 'Valid title, description, category, location, and expected impact are required.' });
   const challenge = await withDatabase(() => prisma.challenge.create({ data: { title, description, category, location, expectedImpact, supportingInformation, proposedSolutions, authorId: req.user.sub } }), () => ({ id: `demo-${Date.now()}`, title, description, category, location, expectedImpact, supportingInformation, proposedSolutions, status: 'open', votes: 0, authorId: req.user.sub, createdAt: new Date().toISOString() }));
   res.status(201).json({ data: { ...serialize(challenge), suggestion: suggestCategory(`${title} ${description}`) }, demo: !databaseAvailable });
 });
