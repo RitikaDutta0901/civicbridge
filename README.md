@@ -177,8 +177,14 @@ Run the checks locally with:
 ```sh
 npm --prefix frontend run build
 npm --prefix backend run check
+npm --prefix backend test
 DATABASE_URL=... npm --prefix backend run prisma:validate
 ```
+
+The backend test command runs multi-step integration flows against the configured
+PostgreSQL database, including authentication, challenge persistence, impact
+reporting, and duplicate moderation-report protection. A detailed validation
+record is maintained in `runtime-validation-report.md`.
 
 ## Phase 6 stabilization and security
 

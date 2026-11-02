@@ -279,6 +279,15 @@ app.post('/api/reports', auth, async (req, res) => {
   const { challengeId, solutionId, reason, details } = req.body;
   if ((!challengeId && !solutionId) || (challengeId && solutionId) || !validateText(reason, 120) || (details && !validateText(details, 2000))) return res.status(400).json({ error: 'Select one valid content item and provide a reason.' });
   try {
+    if (databaseAvailable) {
+      try {
+        const existing = await prisma.moderationReport.findFirst({ where: { reporterId: req.user.sub, challengeId: challengeId || null, solutionId: solutionId || null } });
+        if (existing) return res.status(409).json({ error: 'You have already reported this content.' });
+      } catch (error) {
+        databaseAvailable = false;
+        console.warn('Unable to check duplicate report:', error.message);
+      }
+    }
     const report = await withDatabase(() => prisma.moderationReport.create({ data: { reporterId: req.user.sub, challengeId, solutionId, reason: reason.trim(), details } }), () => {
       if (demoReports.some(item => item.reporterId === req.user.sub && item.challengeId === challengeId && item.solutionId === solutionId && item.status === 'pending')) { const error = new Error('Duplicate report'); error.code = 'P2002'; throw error; }
       const item = { id: `demo-report-${Date.now()}`, reporterId: req.user.sub, challengeId, solutionId, reason: reason.trim(), details, status: 'pending', createdAt: new Date().toISOString() }; demoReports.push(item); return item;
