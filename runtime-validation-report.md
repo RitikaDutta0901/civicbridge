@@ -12,6 +12,7 @@
 | API integration tests | PASS | 0 | 3 multi-step suites, 3 passed, 0 failed |
 | Frontend build | PASS | 0 | Vite production build completed |
 | Browser rendering smoke test | PASS | 0 | Installed Google Chrome rendered the React SPA DOM |
+| Automatic runtime script | PASS | 0 | Started stopped services automatically and completed all checks |
 | Playwright installation | BLOCKED | 1 | `npx playwright install --with-deps chromium` requires sudo for system dependencies |
 
 ## Test Coverage
@@ -34,7 +35,7 @@ browser-tier: FALLBACK(headless Chrome smoke test) — Playwright system depende
 
 ## Known Gaps
 
-1. Full Playwright interaction tests were not run because the required browser/system dependency installation needs sudo access.
+1. Full Playwright interaction tests were not run because the required browser/system dependency installation needs sudo access. The no-sudo validator uses installed Google Chrome for rendered-page verification.
 2. The validation suite covers the highest-risk core workflows, not every possible UI state or every advanced project-management route.
 3. Test-created users, challenges, and reports remain in the local development database.
 

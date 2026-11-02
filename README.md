@@ -179,12 +179,16 @@ npm --prefix frontend run build
 npm --prefix backend run check
 npm --prefix backend test
 DATABASE_URL=... npm --prefix backend run prisma:validate
+# With API and frontend running:
+./scripts/validate-runtime.sh
 ```
 
 The backend test command runs multi-step integration flows against the configured
 PostgreSQL database, including authentication, challenge persistence, impact
 reporting, and duplicate moderation-report protection. A detailed validation
 record is maintained in `runtime-validation-report.md`.
+The runtime script uses installed system Chrome directly, so it does not require
+sudo or Playwright browser downloads.
 
 ## Phase 6 stabilization and security
 

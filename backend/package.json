@@ -9,7 +9,8 @@
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "test": "node --check src/server.js && node --check src/app.js && node --test --test-concurrency=1 tests/*.test.mjs"
+    "test": "node --check src/server.js && node --check src/app.js && node --test --test-concurrency=1 tests/*.test.mjs",
+    "validate:runtime": "../scripts/validate-runtime.sh"
   },
   "dependencies": {
     "@prisma/client": "^6.17.1",
